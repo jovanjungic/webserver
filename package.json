@@ -1,0 +1,13 @@
+{
+  "name": "http-server-demo",
+  "version": "1.0.0",
+  "description": "Making my own HTTP server.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": ["nodejs", "http", "server", "esmodules"],
+  "author": "jovanjungic",
+  "license": "MIT"
+} 
