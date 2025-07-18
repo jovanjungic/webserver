@@ -10,18 +10,19 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 import * as net from "net";
 let running = true;
 function bufPush(buf, data) {
-    const newLen = buf.length + data.length;
+    const newLen = buf.length + data.length + buf.start;
     if (buf.length < newLen) {
         let cap = Math.max(buf.data.length, 32);
         while (cap < newLen) {
             cap *= 2;
         }
         const grown = Buffer.alloc(cap);
-        buf.data.copy(grown, 0);
+        buf.data.copy(grown, 0, buf.start, buf.start + buf.length);
         buf.data = grown;
+        buf.start = 0;
     }
-    data.copy(buf.data, buf.length);
-    buf.length = newLen;
+    data.copy(buf.data, buf.start + buf.length);
+    buf.length += data.length;
 }
 function cutMessage(buf) {
     const idx = buf.data.subarray(0, buf.length).indexOf("\n");
@@ -33,8 +34,15 @@ function cutMessage(buf) {
     return msg;
 }
 function bufPop(buf, len) {
-    buf.data.copyWithin(0, len, buf.length);
+    // buf.data.copyWithin(0, len, buf.length);
+    // buf.length -= len;
+    // past code to understand how i need to change this
+    buf.start += len;
     buf.length -= len;
+    if (buf.start > buf.data.length / 2) {
+        buf.data.copyWithin(0, buf.start, buf.start + buf.length);
+        buf.start = 0;
+    }
 }
 function newConn(socket) {
     return __awaiter(this, void 0, void 0, function* () {
@@ -53,7 +61,7 @@ function newConn(socket) {
 function serveClient(socket) {
     return __awaiter(this, void 0, void 0, function* () {
         const conn = soInit(socket);
-        const buf = { data: Buffer.alloc(0), length: 0 };
+        const buf = { data: Buffer.alloc(0), start: 0, length: 0 };
         while (true) {
             const msg = cutMessage(buf);
             if (!msg) {
@@ -64,7 +72,8 @@ function serveClient(socket) {
                 }
                 continue;
             }
-            if (msg.equals(Buffer.from("quit\n")) || msg.equals(Buffer.from("quit\r\n"))) {
+            if (msg.equals(Buffer.from("quit\n")) ||
+                msg.equals(Buffer.from("quit\r\n"))) {
                 yield soWrite(conn, Buffer.from("bye\n"));
                 break;
             }

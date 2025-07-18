@@ -16,22 +16,24 @@ interface TCPConn {
 // Dynamic buffer definition
 interface DynBuff {
     data: Buffer;
+    start: number;
     length: number;
 }
 
 function bufPush(buf: DynBuff, data: Buffer): void {
-    const newLen = buf.length + data.length;
+    const newLen = buf.length + data.length + buf.start;
     if (buf.length < newLen) {
         let cap = Math.max(buf.data.length, 32);
         while (cap < newLen) {
             cap *= 2;
         }
         const grown = Buffer.alloc(cap);
-        buf.data.copy(grown, 0);
+        buf.data.copy(grown, 0, buf.start, buf.start + buf.length);
         buf.data = grown;
+        buf.start = 0;
     }
-    data.copy(buf.data, buf.length);
-    buf.length = newLen;
+    data.copy(buf.data, buf.start + buf.length);
+    buf.length += data.length;
 }
 
 function cutMessage(buf: DynBuff): null | Buffer {
@@ -45,8 +47,15 @@ function cutMessage(buf: DynBuff): null | Buffer {
 }
 
 function bufPop(buf: DynBuff, len: number): void {
-    buf.data.copyWithin(0, len, buf.length);
+    // buf.data.copyWithin(0, len, buf.length);
+    // buf.length -= len;
+    // past code to understand how i need to change this
+    buf.start += len;
     buf.length -= len;
+    if (buf.start > buf.data.length / 2) {
+        buf.data.copyWithin(0, buf.start, buf.start + buf.length);
+        buf.start = 0;
+    }
 }
 
 async function newConn(socket: net.Socket): Promise<void> {
@@ -62,7 +71,7 @@ async function newConn(socket: net.Socket): Promise<void> {
 
 async function serveClient(socket: net.Socket): Promise<void> {
     const conn: TCPConn = soInit(socket);
-    const buf: DynBuff = { data: Buffer.alloc(0), length: 0 };
+    const buf: DynBuff = { data: Buffer.alloc(0), start: 0, length: 0 };
     while (true) {
         const msg: null | Buffer = cutMessage(buf);
         if (!msg) {
@@ -73,7 +82,10 @@ async function serveClient(socket: net.Socket): Promise<void> {
             }
             continue;
         }
-        if (msg.equals(Buffer.from("quit\n")) || msg.equals(Buffer.from("quit\r\n"))) {
+        if (
+            msg.equals(Buffer.from("quit\n")) ||
+            msg.equals(Buffer.from("quit\r\n"))
+        ) {
             await soWrite(conn, Buffer.from("bye\n"));
             break;
         } else {
@@ -81,7 +93,7 @@ async function serveClient(socket: net.Socket): Promise<void> {
             await soWrite(conn, reply);
         }
     }
-    console.log("end connection"); 
+    console.log("end connection");
     conn.socket.end();
 }
 
@@ -161,7 +173,7 @@ function soListen(
     server: net.Server,
     options: net.ListenOptions
 ): Promise<void> {
-    console.log("server running now.")
+    console.log("server running now.");
     return new Promise((resolve, reject) => {
         server.once("listening", resolve);
         server.once("error", reject);
