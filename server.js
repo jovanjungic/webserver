@@ -1,37 +1,3 @@
-"use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -41,9 +7,35 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
-Object.defineProperty(exports, "__esModule", { value: true });
-const net = __importStar(require("net"));
+import * as net from "net";
 let running = true;
+function bufPush(buf, data) {
+    const newLen = buf.length + data.length;
+    if (buf.length < newLen) {
+        let cap = Math.max(buf.data.length, 32);
+        while (cap < newLen) {
+            cap *= 2;
+        }
+        const grown = Buffer.alloc(cap);
+        buf.data.copy(grown, 0);
+        buf.data = grown;
+    }
+    data.copy(buf.data, buf.length);
+    buf.length = newLen;
+}
+function cutMessage(buf) {
+    const idx = buf.data.subarray(0, buf.length).indexOf("\n");
+    if (idx < 0) {
+        return null;
+    }
+    const msg = Buffer.from(buf.data.subarray(0, idx + 1));
+    bufPop(buf, idx + 1);
+    return msg;
+}
+function bufPop(buf, len) {
+    buf.data.copyWithin(0, len, buf.length);
+    buf.length -= len;
+}
 function newConn(socket) {
     return __awaiter(this, void 0, void 0, function* () {
         console.log("new connection", socket.remoteAddress, socket.remotePort);
@@ -51,7 +43,7 @@ function newConn(socket) {
             yield serveClient(socket);
         }
         catch (error) {
-            console.error("exception: ", error);
+            console.error("error: ", error);
         }
         finally {
             socket.destroy();
@@ -61,15 +53,28 @@ function newConn(socket) {
 function serveClient(socket) {
     return __awaiter(this, void 0, void 0, function* () {
         const conn = soInit(socket);
+        const buf = { data: Buffer.alloc(0), length: 0 };
         while (true) {
-            const data = yield soRead(conn);
-            if (data.length === 0) {
-                console.log("end connection");
+            const msg = cutMessage(buf);
+            if (!msg) {
+                const data = yield soRead(conn);
+                bufPush(buf, data);
+                if (data.length === 0) {
+                    break;
+                }
+                continue;
+            }
+            if (msg.equals(Buffer.from("quit\n")) || msg.equals(Buffer.from("quit\r\n"))) {
+                yield soWrite(conn, Buffer.from("bye\n"));
                 break;
             }
-            console.log("data: ", data);
-            yield soWrite(conn, data);
+            else {
+                const reply = Buffer.concat([Buffer.from("Echo: "), msg]);
+                yield soWrite(conn, reply);
+            }
         }
+        console.log("end connection");
+        conn.socket.end();
     });
 }
 function soInit(socket) {
@@ -138,13 +143,21 @@ function soAccept(server) {
         });
     });
 }
+function soListen(server, options) {
+    console.log("server running now.");
+    return new Promise((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+        server.listen(options);
+    });
+}
 let server = net.createServer({
     pauseOnConnect: true,
+    allowHalfOpen: true,
 });
 server.on("error", (error) => {
     throw error;
 });
-server.listen({ host: "127.0.0.1", port: 1234 });
 process.on("SIGINT", () => {
     running = false;
     console.log("Shutting down...");
@@ -155,6 +168,7 @@ process.on("SIGINT", () => {
 });
 function main() {
     return __awaiter(this, void 0, void 0, function* () {
+        yield soListen(server, { host: "127.0.0.1", port: 1234 });
         while (running) {
             let socket = yield soAccept(server);
             newConn(socket);

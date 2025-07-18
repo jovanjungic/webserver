@@ -44,7 +44,7 @@ function cutMessage(buf: DynBuff): null | Buffer {
     return msg;
 }
 
-function bufPop(buf: DynBuff, len: number): void{
+function bufPop(buf: DynBuff, len: number): void {
     buf.data.copyWithin(0, len, buf.length);
     buf.length -= len;
 }
@@ -64,15 +64,24 @@ async function serveClient(socket: net.Socket): Promise<void> {
     const conn: TCPConn = soInit(socket);
     const buf: DynBuff = { data: Buffer.alloc(0), length: 0 };
     while (true) {
-        const msg: null|Buffer = cutMessage(buf);
-        const data: Buffer = await soRead(conn);
-        if (data.length === 0) {
-            console.log("end connection");
-            break;
+        const msg: null | Buffer = cutMessage(buf);
+        if (!msg) {
+            const data: Buffer = await soRead(conn);
+            bufPush(buf, data);
+            if (data.length === 0) {
+                break;
+            }
+            continue;
         }
-        console.log("data: ", data);
-        await soWrite(conn, data);
+        if (msg.equals(Buffer.from("quit\n")) || msg.equals(Buffer.from("quit\r\n"))) {
+            await soWrite(conn, Buffer.from("bye\n"));
+            break;
+        } else {
+            const reply = Buffer.concat([Buffer.from("Echo: "), msg]);
+            await soWrite(conn, reply);
+        }
     }
+    console.log("end connection"); 
     conn.socket.end();
 }
 
@@ -152,6 +161,7 @@ function soListen(
     server: net.Server,
     options: net.ListenOptions
 ): Promise<void> {
+    console.log("server running now.")
     return new Promise((resolve, reject) => {
         server.once("listening", resolve);
         server.once("error", reject);
