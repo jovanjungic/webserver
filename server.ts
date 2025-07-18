@@ -5,7 +5,7 @@ let running: boolean = true;
 // TCPConn type definition
 interface TCPConn {
     socket: net.Socket;
-    err: Error | null;
+    err: null | Error;
     ended: boolean;
     reader: null | {
         resolve: (value: Buffer) => void;
@@ -18,7 +18,7 @@ async function newConn(socket: net.Socket): Promise<void> {
     try {
         await serveClient(socket);
     } catch (error) {
-        console.error("exception: ", error);
+        console.error("error: ", error);
     } finally {
         socket.destroy();
     }
@@ -35,6 +35,7 @@ async function serveClient(socket: net.Socket): Promise<void> {
         console.log("data: ", data);
         await soWrite(conn, data);
     }
+    conn.socket.end();
 }
 
 function soInit(socket: net.Socket): TCPConn {
@@ -109,14 +110,25 @@ function soAccept(server: net.Server): Promise<net.Socket> {
     });
 }
 
+function soListen(
+    server: net.Server,
+    options: net.ListenOptions
+): Promise<void> {
+    return new Promise((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+        server.listen(options);
+    });
+}
+
 let server: net.Server = net.createServer({
     pauseOnConnect: true,
+    allowHalfOpen: true,
 });
 
 server.on("error", (error: Error) => {
     throw error;
 });
-server.listen({ host: "127.0.0.1", port: 1234 });
 
 process.on("SIGINT", () => {
     running = false;
@@ -128,6 +140,7 @@ process.on("SIGINT", () => {
 });
 
 async function main(): Promise<void> {
+    await soListen(server, { host: "127.0.0.1", port: 1234 });
     while (running) {
         let socket: net.Socket = await soAccept(server);
         newConn(socket);
