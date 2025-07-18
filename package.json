@@ -7,7 +7,16 @@
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": ["nodejs", "http", "server", "esmodules"],
+  "keywords": [
+    "nodejs",
+    "http",
+    "server",
+    "esmodules"
+  ],
   "author": "jovanjungic",
-  "license": "MIT"
-} 
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.0.14",
+    "typescript": "^5.8.3"
+  }
+}
