@@ -1,6 +1,34 @@
 import * as net from "net";
 
 let running: boolean = true;
+const kMaxHeaderLen = 1024 * 8;
+
+class HTTPError extends Error {
+    code: number;
+    constructor(code: number, message: string) {
+        super(message);
+        this.code = code;
+        this.name = "HTTPError";
+    }
+}
+
+interface HTTPReq {
+    method: string;
+    uri: Buffer;
+    version: string;
+    headers: Buffer[];
+}
+
+interface HTTPRes {
+    code: number;
+    headers: Buffer[];
+    body: BodyReader;
+}
+
+interface BodyReader {
+    length: number;
+    read: () => Promise<Buffer>;
+}
 
 // TCPConn type definition
 interface TCPConn {
@@ -20,6 +48,99 @@ interface DynBuff {
     length: number;
 }
 
+function splitLines(data: Buffer): Buffer[] {
+    const lines: Buffer[] = [];
+    let start = 0;
+    for (let i = 0; i < data.length - 1; i++) {
+        if (data[i] == 13 && data[i + 1] === 10) {
+            // 13 is \r and 10 is \n
+            lines.push(data.subarray(start, i));
+            start = i + 2;
+            i++;
+        }
+    }
+    if (start < data.length) {
+        lines.push(data.subarray(start));
+    }
+    return lines;
+}
+
+function parseRequestLine(line: Buffer): [string, Buffer, string] {
+    const str = line.toString("utf8");
+    const parts = str.split(" ");
+    if (parts.length !== 3) {
+        throw new HTTPError(400, "Malformed request line");
+    }
+    const [method, uri, version] = parts;
+    return [method, Buffer.from(uri), version];
+}
+
+function validateHeader(header: Buffer): boolean {
+    if (header.length === 0) return false;
+    const idx = header.indexOf(":");
+    if (idx <= 0 || idx === header.length - 1) return false;
+    return true;
+}
+
+function parseHTTPReq(data: Buffer): HTTPReq {
+    const lines: Buffer[] = splitLines(data);
+    const [method, uri, version] = parseRequestLine(lines[0]);
+    const headers: Buffer[] = [];
+    for (let i = 1; i < lines.length - 1; i++) {
+        const h = Buffer.from(lines[i]);
+        if (!validateHeader(h)) {
+            throw new HTTPError(400, "bad field");
+        }
+        headers.push(h);
+    }
+    console.assert(lines[lines.length - 1].length === 0);
+    return {
+        method: method,
+        uri: uri,
+        version: version,
+        headers: headers,
+    };
+}
+
+function fieldGet(headers: Buffer[], name: string): Buffer | null {
+    const prefix = Buffer.from(name + ": ");
+    for (const header of headers) {
+        if (header.subarray(0, prefix.length).equals(prefix)) {
+            return header.subarray(prefix.length);
+        }
+    }
+    return null;
+}
+
+function readerFromReq(conn: TCPConn, buf: DynBuff, req: HTTPReq): BodyReader {
+    let bodyLen = -1;
+    const contentLen = fieldGet(req.headers, "Content-Length");
+    if (contentLen) {
+        bodyLen = parseInt(contentLen.toString("latin1"), 10);
+        if (isNaN(bodyLen)) {
+            throw new HTTPError(400, "bad Content-Length");
+        }
+    }
+    const bodyAllowed = !(req.method === "GET" || req.method === "HEAD");
+    const chunked =
+        fieldGet(req.headers, "Transfer-Encoding")?.equals(
+            Buffer.from("chunked")
+        ) || false;
+    if (!bodyAllowed && (bodyLen > 0 || chunked)) {
+        throw new HTTPError(400, "HTTP body not allowed.");
+    }
+    if (bodyLen >= 0) {
+        //"Content-Length" is present
+        return readerFromConnLength(conn, buf, bodyLen);
+    } else if (chunked) {
+        //chunked encoding
+        throw new HTTPError(501, "TODO");
+    } else {
+        //read the rest of the connection
+        throw new HTTPError(501, "TODO");
+    }
+}
+
 function bufPush(buf: DynBuff, data: Buffer): void {
     const newLen = buf.length + data.length + buf.start;
     if (buf.length < newLen) {
@@ -36,13 +157,16 @@ function bufPush(buf: DynBuff, data: Buffer): void {
     buf.length += data.length;
 }
 
-function cutMessage(buf: DynBuff): null | Buffer {
-    const idx = buf.data.subarray(0, buf.length).indexOf("\n");
+function cutMessage(buf: DynBuff): null | HTTPReq {
+    const idx = buf.data.subarray(0, buf.length).indexOf("\r\n\r\n");
     if (idx < 0) {
+        if (buf.length >= kMaxHeaderLen) {
+            throw new HTTPError(413, "header is too large");
+        }
         return null;
     }
-    const msg = Buffer.from(buf.data.subarray(0, idx + 1));
-    bufPop(buf, idx + 1);
+    const msg = parseHTTPReq(buf.data.subarray(0, idx + 4));
+    bufPop(buf, idx + 4);
     return msg;
 }
 
@@ -59,42 +183,53 @@ function bufPop(buf: DynBuff, len: number): void {
 }
 
 async function newConn(socket: net.Socket): Promise<void> {
-    console.log("new connection", socket.remoteAddress, socket.remotePort);
+    const conn: TCPConn = soInit(socket);
     try {
-        await serveClient(socket);
-    } catch (error) {
-        console.error("error: ", error);
+        await serveClient(conn);
+    } catch (exc) {
+        console.error("exception: ", exc);
+        if (exc instanceof HTTPError) {
+            const resp: HTTPRes = {
+                code: exc.code,
+                headers: [],
+                body: readerFromMemory(Buffer.from(exc.message + "\n")),
+            };
+            try {
+                await writeHTTPResp(conn, resp);
+            } catch (exc) {
+                // ignore
+            }
+        }
     } finally {
         socket.destroy();
     }
 }
 
-async function serveClient(socket: net.Socket): Promise<void> {
-    const conn: TCPConn = soInit(socket);
-    const buf: DynBuff = { data: Buffer.alloc(0), start: 0, length: 0 };
+async function serveClient(conn: TCPConn): Promise<void> {
+    const buf: DynBuff = { data: Buffer.alloc(0), length: 0, start: 0 };
     while (true) {
-        const msg: null | Buffer = cutMessage(buf);
+        const msg: null | HTTPReq = cutMessage(buf);
         if (!msg) {
-            const data: Buffer = await soRead(conn);
+            const data = await soRead(conn);
             bufPush(buf, data);
+            if (data.length === 0 && buf.length === 0) {
+                return;
+            }
             if (data.length === 0) {
-                break;
+                throw new HTTPError(400, "Unexpected EOF.");
             }
             continue;
         }
-        if (
-            msg.equals(Buffer.from("quit\n")) ||
-            msg.equals(Buffer.from("quit\r\n"))
-        ) {
-            await soWrite(conn, Buffer.from("bye\n"));
-            break;
-        } else {
-            const reply = Buffer.concat([Buffer.from("Echo: "), msg]);
-            await soWrite(conn, reply);
+
+        const reqBody: BodyReader = readerFromReq(conn, buf, msg);
+        const res: HTTPRes = await handleReq(msg, reqBody);
+
+        if (msg.version === "1.0") {
+            return;
         }
+
+        while ((await reqBody.read()).length > 0) {}
     }
-    console.log("end connection");
-    conn.socket.end();
 }
 
 function soInit(socket: net.Socket): TCPConn {
