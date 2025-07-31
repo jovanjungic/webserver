@@ -21,3 +21,6 @@ Thumbs.db
 
 # VSCode settings
 .vscode/ 
+
+# Compiled source file
+server.js
