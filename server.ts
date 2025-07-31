@@ -1,8 +1,10 @@
 import * as net from "net";
 
+// Global state and constants
 let running: boolean = true;
-const kMaxHeaderLen = 1024 * 8;
+const kMaxHeaderLen = 1024 * 8; // 8KB max header size
 
+// Custom HTTP error class
 class HTTPError extends Error {
     code: number;
     constructor(code: number, message: string) {
@@ -12,6 +14,7 @@ class HTTPError extends Error {
     }
 }
 
+// HTTP request structure
 interface HTTPReq {
     method: string;
     uri: Buffer;
@@ -19,18 +22,20 @@ interface HTTPReq {
     headers: Buffer[];
 }
 
+// HTTP response structure
 interface HTTPRes {
     code: number;
     headers: Buffer[];
     body: BodyReader;
 }
 
+// Streaming body reader interface
 interface BodyReader {
     length: number;
     read: () => Promise<Buffer>;
 }
 
-// TCPConn type definition
+// TCP connection wrapper with async read support
 interface TCPConn {
     socket: net.Socket;
     err: null | Error;
@@ -41,13 +46,14 @@ interface TCPConn {
     };
 }
 
-// Dynamic buffer definition
+// Dynamic buffer 
 interface DynBuff {
     data: Buffer;
     start: number;
     length: number;
 }
 
+// Parse buffer into lines
 function splitLines(data: Buffer): Buffer[] {
     const lines: Buffer[] = [];
     let start = 0;
@@ -65,6 +71,7 @@ function splitLines(data: Buffer): Buffer[] {
     return lines;
 }
 
+// Parse HTTP request line - "METHOD URI VERSION"
 function parseRequestLine(line: Buffer): [string, Buffer, string] {
     const str = line.toString("utf8");
     const parts = str.split(" ");
@@ -75,6 +82,7 @@ function parseRequestLine(line: Buffer): [string, Buffer, string] {
     return [method, Buffer.from(uri), version];
 }
 
+// Validate HTTP header 
 function validateHeader(header: Buffer): boolean {
     if (header.length === 0) return false;
     const idx = header.indexOf(":");
@@ -82,6 +90,7 @@ function validateHeader(header: Buffer): boolean {
     return true;
 }
 
+// Parse complete HTTP request from buffer
 function parseHTTPReq(data: Buffer): HTTPReq {
     const lines: Buffer[] = splitLines(data);
     const [method, uri, version] = parseRequestLine(lines[0]);
@@ -102,6 +111,7 @@ function parseHTTPReq(data: Buffer): HTTPReq {
     };
 }
 
+// Extract header value
 function fieldGet(headers: Buffer[], name: string): Buffer | null {
     const prefix = Buffer.from(name + ": ");
     for (const header of headers) {
@@ -112,6 +122,7 @@ function fieldGet(headers: Buffer[], name: string): Buffer | null {
     return null;
 }
 
+// Body Reader for Content-Length
 function readerFromConnLength(
     conn: TCPConn,
     buf: DynBuff,
@@ -141,6 +152,7 @@ function readerFromConnLength(
     };
 }
 
+// Create appropriate body reader
 function readerFromReq(conn: TCPConn, buf: DynBuff, req: HTTPReq): BodyReader {
     let bodyLen = -1;
     const contentLen = fieldGet(req.headers, "Content-Length");
@@ -170,6 +182,7 @@ function readerFromReq(conn: TCPConn, buf: DynBuff, req: HTTPReq): BodyReader {
     }
 }
 
+// Create body reader from in-memory buffer
 function readerFromMemory(data: Buffer): BodyReader {
     let done = false;
     return {
@@ -185,6 +198,7 @@ function readerFromMemory(data: Buffer): BodyReader {
     };
 }
 
+// Convert HTTP status code to reason phrase
 function getStatusText(code: number): string {
     switch (code) {
         case 200:
@@ -200,6 +214,7 @@ function getStatusText(code: number): string {
     }
 }
 
+// Encode HTTP response headers to buffer
 function encodeHTTPResp(resp: HTTPRes): Buffer {
     const statusLine = `HTTP/1.1 ${resp.code} ${getStatusText(resp.code)}\r\n`;
     const statusBuffer = Buffer.from(statusLine, "utf8");
@@ -215,6 +230,7 @@ function encodeHTTPResp(resp: HTTPRes): Buffer {
     return Buffer.concat(parts);
 }
 
+// Write complete HTTP response
 async function writeHTTPResp(conn: TCPConn, resp: HTTPRes): Promise<void> {
     if (resp.body.length < 0) {
         throw new Error("TODO: chunked encoding");
@@ -233,6 +249,7 @@ async function writeHTTPResp(conn: TCPConn, resp: HTTPRes): Promise<void> {
     }
 }
 
+// Handle HTTP request and response
 async function handleReq(req: HTTPReq, body: BodyReader): Promise<HTTPRes> {
     let resp: BodyReader;
     switch (req.uri.toString("latin1")) {
@@ -251,6 +268,7 @@ async function handleReq(req: HTTPReq, body: BodyReader): Promise<HTTPRes> {
     };
 }
 
+// Add data to dynamic buffer
 function bufPush(buf: DynBuff, data: Buffer): void {
     const newLen = buf.length + data.length + buf.start;
     if (buf.length < newLen) {
@@ -267,6 +285,7 @@ function bufPush(buf: DynBuff, data: Buffer): void {
     buf.length += data.length;
 }
 
+// Extract complete HTTP message from buffer
 function cutMessage(buf: DynBuff): null | HTTPReq {
     const idx = buf.data.subarray(0, buf.length).indexOf("\r\n\r\n");
     if (idx < 0) {
@@ -280,6 +299,7 @@ function cutMessage(buf: DynBuff): null | HTTPReq {
     return msg;
 }
 
+// Remove consumed data from buffer
 function bufPop(buf: DynBuff, len: number): void {
     // buf.data.copyWithin(0, len, buf.length);
     // buf.length -= len;
@@ -292,6 +312,7 @@ function bufPop(buf: DynBuff, len: number): void {
     }
 }
 
+// Handle new TCP connection
 async function newConn(socket: net.Socket): Promise<void> {
     const conn: TCPConn = soInit(socket);
     try {
@@ -315,6 +336,7 @@ async function newConn(socket: net.Socket): Promise<void> {
     }
 }
 
+// Client serving loop
 async function serveClient(conn: TCPConn): Promise<void> {
     const buf: DynBuff = { data: Buffer.alloc(0), length: 0, start: 0 };
     while (true) {
@@ -343,6 +365,7 @@ async function serveClient(conn: TCPConn): Promise<void> {
     }
 }
 
+// Initialize TCP connection
 function soInit(socket: net.Socket): TCPConn {
     const conn: TCPConn = {
         socket: socket,
@@ -377,6 +400,7 @@ function soInit(socket: net.Socket): TCPConn {
     return conn;
 }
 
+// Async read from TCP connection
 function soRead(conn: TCPConn): Promise<Buffer> {
     console.assert(!conn.reader);
     return new Promise<Buffer>((resolve, reject) => {
@@ -393,6 +417,7 @@ function soRead(conn: TCPConn): Promise<Buffer> {
     });
 }
 
+// Async write to TCP connection
 function soWrite(conn: TCPConn, data: Buffer): Promise<void> {
     console.assert(data.length > 0);
     return new Promise<void>((resolve, reject) => {
@@ -407,6 +432,7 @@ function soWrite(conn: TCPConn, data: Buffer): Promise<void> {
     });
 }
 
+// Async accept new TCP connection
 function soAccept(server: net.Server): Promise<net.Socket> {
     return new Promise<net.Socket>((resolve) => {
         server.once("connection", (socket: net.Socket) => {
@@ -415,6 +441,7 @@ function soAccept(server: net.Server): Promise<net.Socket> {
     });
 }
 
+// Async server listen
 function soListen(
     server: net.Server,
     options: net.ListenOptions
@@ -427,6 +454,7 @@ function soListen(
     });
 }
 
+// Creating server
 let server: net.Server = net.createServer({
     pauseOnConnect: true,
     allowHalfOpen: true,
@@ -436,6 +464,7 @@ server.on("error", (error: Error) => {
     throw error;
 });
 
+// Safe SHUTDOWN on SIGINT
 process.on("SIGINT", () => {
     running = false;
     console.log("Shutting down...");
@@ -445,6 +474,7 @@ process.on("SIGINT", () => {
     });
 });
 
+// Main server loop
 async function main(): Promise<void> {
     await soListen(server, { host: "127.0.0.1", port: 1234 });
     while (running) {
