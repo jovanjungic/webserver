@@ -91,7 +91,7 @@ sha1sum test.txt
 - Will be refactored for better organization as the project grows
 - Focus is on understanding concepts rather than perfect implementation
 - This was written by AI, I find that it will create this README file much better than I would currently, especially with all of this in my mind currently. The project does make use of AI, but mainly to assist me in understanding key concepts from the book I am following
-- The book is ' Build Your Own Web Server from Scratch in Node.JS
+- The book is ' Build Your Own Web Server from Scratch in Node.JS '
 
 ---
 
