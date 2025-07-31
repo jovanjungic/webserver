@@ -1,6 +1,9 @@
 # Node.js dependencies
 node_modules/
 
+# Compiled source
+server.js
+
 # TypeScript build output
 *.tsbuildinfo
 dist/
@@ -21,6 +24,3 @@ Thumbs.db
 
 # VSCode settings
 .vscode/ 
-
-# Compiled source file
-server.js
