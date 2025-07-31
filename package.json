@@ -2,10 +2,12 @@
   "name": "http-server-demo",
   "version": "1.0.0",
   "description": "Making my own HTTP server.",
-  "type": "module",
+  "type": "commonjs",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "tsx server.ts",
+    "dev": "tsx server.ts",
+    "build": "tsc server.ts"
   },
   "keywords": [
     "nodejs",
@@ -17,6 +19,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^24.0.14",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "tsx": "^4.7.0"
   }
 }

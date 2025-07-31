@@ -112,6 +112,35 @@ function fieldGet(headers: Buffer[], name: string): Buffer | null {
     return null;
 }
 
+function readerFromConnLength(
+    conn: TCPConn,
+    buf: DynBuff,
+    remain: number
+): BodyReader {
+    return {
+        length: remain,
+        read: async (): Promise<Buffer> => {
+            if (remain === 0) {
+                return Buffer.from(""); // done
+            }
+            if (buf.length === 0) {
+                const data = await soRead(conn);
+                bufPush(buf, data);
+                if (data.length === 0) {
+                    throw new Error("Unexpected EOF from HTTP body.");
+                }
+            }
+            const consume = Math.min(buf.length, remain);
+            remain -= consume;
+            const data = Buffer.from(
+                buf.data.subarray(buf.start, buf.start + consume)
+            );
+            bufPop(buf, consume);
+            return data;
+        },
+    };
+}
+
 function readerFromReq(conn: TCPConn, buf: DynBuff, req: HTTPReq): BodyReader {
     let bodyLen = -1;
     const contentLen = fieldGet(req.headers, "Content-Length");
@@ -139,6 +168,87 @@ function readerFromReq(conn: TCPConn, buf: DynBuff, req: HTTPReq): BodyReader {
         //read the rest of the connection
         throw new HTTPError(501, "TODO");
     }
+}
+
+function readerFromMemory(data: Buffer): BodyReader {
+    let done = false;
+    return {
+        length: data.length,
+        read: async (): Promise<Buffer> => {
+            if (done) {
+                return Buffer.from(""); // done
+            } else {
+                done = true;
+                return data;
+            }
+        },
+    };
+}
+
+function getStatusText(code: number): string {
+    switch (code) {
+        case 200:
+            return "OK";
+        case 400:
+            return "Bad Request";
+        case 413:
+            return "Payload Too Large";
+        case 501:
+            return "Not Implemented";
+        default:
+            return "Unknown";
+    }
+}
+
+function encodeHTTPResp(resp: HTTPRes): Buffer {
+    const statusLine = `HTTP/1.1 ${resp.code} ${getStatusText(resp.code)}\r\n`;
+    const statusBuffer = Buffer.from(statusLine, "utf8");
+
+    const parts: Buffer[] = [statusBuffer];
+    parts.push(...resp.headers);
+
+    for (let i = 1; i < parts.length; i++) {
+        parts[i] = Buffer.concat([parts[i], Buffer.from("\r\n")]);
+    }
+    parts.push(Buffer.from("\r\n"));
+
+    return Buffer.concat(parts);
+}
+
+async function writeHTTPResp(conn: TCPConn, resp: HTTPRes): Promise<void> {
+    if (resp.body.length < 0) {
+        throw new Error("TODO: chunked encoding");
+    }
+    console.assert(!fieldGet(resp.headers, "Content-Length"));
+    resp.headers.push(Buffer.from(`Content-Length: ${resp.body.length}`));
+    // write the header
+    await soWrite(conn, encodeHTTPResp(resp));
+    // write the body
+    while (true) {
+        const data = await resp.body.read();
+        if (data.length === 0) {
+            break;
+        }
+        await soWrite(conn, data);
+    }
+}
+
+async function handleReq(req: HTTPReq, body: BodyReader): Promise<HTTPRes> {
+    let resp: BodyReader;
+    switch (req.uri.toString("latin1")) {
+        case "/echo":
+            resp = body;
+            break;
+        default:
+            resp = readerFromMemory(Buffer.from("hello world.\n"));
+            break;
+    }
+
+    return {
+        code: 200,
+        headers: [Buffer.from("Server: my_first_http_server")],
+        body: resp,
+    };
 }
 
 function bufPush(buf: DynBuff, data: Buffer): void {
@@ -223,6 +333,7 @@ async function serveClient(conn: TCPConn): Promise<void> {
 
         const reqBody: BodyReader = readerFromReq(conn, buf, msg);
         const res: HTTPRes = await handleReq(msg, reqBody);
+        await writeHTTPResp(conn, res);
 
         if (msg.version === "1.0") {
             return;
