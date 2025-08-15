@@ -46,7 +46,7 @@ interface TCPConn {
     };
 }
 
-// Dynamic buffer 
+// Dynamic buffer
 interface DynBuff {
     data: Buffer;
     start: number;
@@ -82,7 +82,7 @@ function parseRequestLine(line: Buffer): [string, Buffer, string] {
     return [method, Buffer.from(uri), version];
 }
 
-// Validate HTTP header 
+// Validate HTTP header
 function validateHeader(header: Buffer): boolean {
     if (header.length === 0) return false;
     const idx = header.indexOf(":");
@@ -233,19 +233,28 @@ function encodeHTTPResp(resp: HTTPRes): Buffer {
 // Write complete HTTP response
 async function writeHTTPResp(conn: TCPConn, resp: HTTPRes): Promise<void> {
     if (resp.body.length < 0) {
-        throw new Error("TODO: chunked encoding");
+        resp.headers.push(Buffer.from("Transfer Encoding: chunked"));
+    } else {
+        resp.headers.push(Buffer.from(`Content Length: ${resp.body.length}`));
     }
-    console.assert(!fieldGet(resp.headers, "Content-Length"));
-    resp.headers.push(Buffer.from(`Content-Length: ${resp.body.length}`));
-    // write the header
+
     await soWrite(conn, encodeHTTPResp(resp));
-    // write the body
-    while (true) {
-        const data = await resp.body.read();
-        if (data.length === 0) {
-            break;
+
+    const crlf = Buffer.from("\r\n");
+    for (let last = false; !last; ) {
+        let data = await resp.body.read();
+        last = data.length === 0; // has it ended?
+        if (resp.body.length < 0) {
+            data = Buffer.concat([
+                Buffer.from(data.length.toString(16)),
+                crlf,
+                data,
+                crlf,
+            ]);
+        } //chunked
+        if (data.length) {
+            await soWrite(conn, data);
         }
-        await soWrite(conn, data);
     }
 }
 
