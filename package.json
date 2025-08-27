@@ -5,9 +5,10 @@
   "type": "commonjs",
   "main": "server.js",
   "scripts": {
-    "start": "tsx server.ts",
+    "start": "tsc server.ts && node server.js",
     "dev": "tsx server.ts",
-    "build": "tsc server.ts"
+    "build": "tsc server.ts",
+    "clean": "rm -f server.js"
   },
   "keywords": [
     "nodejs",
