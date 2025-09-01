@@ -1,4 +1,5 @@
 import * as net from "net";
+import * as fs from "fs/promises";
 
 // Global state and constants
 let running: boolean = true;
@@ -8,12 +9,15 @@ const kMaxHeaderLen = 1024 * 8; // 8KB max header size
 type BufferGenerator = AsyncGenerator<Buffer, void, void>;
 
 async function* countSheep(): BufferGenerator {
-    for (let i = 0; i < 100; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        yield Buffer.from(`${i}\n`);
+    try {
+        for (let i = 0; i < 100; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            yield Buffer.from(`${i}\n`);
+        }
+    } finally {
+        console.log("cleanup!");
     }
 }
-
 async function bufExpectMore(
     conn: TCPConn,
     buf: DynBuff,
@@ -136,6 +140,7 @@ interface HTTPRes {
 interface BodyReader {
     length: number;
     read: () => Promise<Buffer>;
+    close?: () => Promise<void>;
 }
 
 // TCP connection wrapper with async read support
@@ -154,6 +159,36 @@ interface DynBuff {
     data: Buffer;
     start: number;
     length: number;
+}
+
+interface FileReadResult {
+    bytesRead: number;
+    buffer: Buffer;
+}
+
+interface FileReadOptions {
+    buffer?: Buffer;
+    offset?: number | null;
+    length?: number | null;
+    position?: number | null;
+}
+
+interface Stats {
+    isFile(): boolean;
+    isDirectory(): boolean;
+    // ...
+    size: number;
+    // ...
+}
+
+interface FileHandle {
+    read(options?: FileReadOptions): Promise<FileReadResult>;
+    close(): Promise<void>;
+    stat(): Promise<Stats>;
+}
+
+function open(path: string, flags?: string): Promise<FileHandle> {
+    return fs.open(path, flags);
 }
 
 // Parse buffer into lines
@@ -345,6 +380,9 @@ function readerFromGenerator(gen: BufferGenerator): BodyReader {
                 return r.value as Buffer;
             }
         },
+        close: async(): Promise<void> => {
+            await gen.return();
+        }
     };
 }
 
@@ -408,9 +446,63 @@ async function writeHTTPResp(conn: TCPConn, resp: HTTPRes): Promise<void> {
     }
 }
 
+function resp404(): HTTPRes {
+    return {
+        code: 404,
+        headers: [Buffer.from("Server: my_first_http_server")],
+        body: readerFromMemory(Buffer.from("404 Not Found\n")),
+    };
+}
+
+function readerFromStaticFile(fp: fs.FileHandle, size: number): BodyReader {
+    const buf = Buffer.allocUnsafe(65536);
+    let got = 0;
+    return {
+        length: size,
+        read: async (): Promise<Buffer> => {
+            const r: fs.FileReadResult<Buffer> = await fp.read({buffer: buf});
+            got += r.bytesRead;
+            if (got > size || (got < size && r.bytesRead === 0)) {
+                throw new Error("file size changed, abandon it.");
+            }
+            // Copy the data to ensure it's stable
+            return Buffer.from(r.buffer.subarray(0, r.bytesRead));
+        },
+        close: async () => await fp.close(),
+    };
+}
+
+async function serveStaticFile(path: string): Promise<HTTPRes> {
+    let fp: null | fs.FileHandle = null;
+    try {
+        fp = await fs.open(path, "r");
+        const stat = await fp.stat();
+        if (!stat.isFile()) {
+            await fp.close();
+            return resp404();
+        }
+        const size = stat.size;
+        const reader: BodyReader = readerFromStaticFile(fp, size);
+        // fp is now owned by the reader, don't close it here
+        return { code: 200, headers: [], body: reader };
+    } catch (error) {
+        console.info("error serving file: ", error);
+        if (fp) await fp.close();
+        return resp404();
+    }
+}
+
 // Handle HTTP request and response
 async function handleReq(req: HTTPReq, body: BodyReader): Promise<HTTPRes> {
     let resp: BodyReader;
+
+    const uri = req.uri.toString("utf8");
+    if (uri.startsWith("/files/")) {
+        // serve files from the current working directory
+        // FIXME: prevent escaping by `..`
+        return await serveStaticFile(uri.substr("/files/".length));
+    }
+
     switch (req.uri.toString("latin1")) {
         case "/echo":
             resp = body;
@@ -438,7 +530,7 @@ function bufPush(buf: DynBuff, data: Buffer): void {
         while (cap < newLen) {
             cap *= 2;
         }
-        const grown = Buffer.alloc(cap);
+        const grown = Buffer.allocUnsafe(cap);
         buf.data.copy(grown, 0, buf.start, buf.start + buf.length);
         buf.data = grown;
         buf.start = 0;
@@ -491,6 +583,8 @@ async function newConn(socket: net.Socket): Promise<void> {
                 await writeHTTPResp(conn, resp);
             } catch (exc) {
                 // ignore
+            } finally {
+                await resp.body.close?.();
             }
         }
     } finally {
