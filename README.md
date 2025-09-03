@@ -22,10 +22,11 @@ This project is a personal learning journey: building an HTTP server from scratc
 - ✅ HTTP request parsing (method, URI, version, headers)
 - ✅ HTTP response writing with proper headers
 - ✅ Content-Length body reading and streaming
-- ✅ Chunked transfer encoding support (in progress)
+- ✅ Chunked transfer encoding
 - ✅ HTTP/1.0 EOF body reading
 - ✅ `/echo` endpoint that returns request body
 - ✅ `/sheep` endpoint with streaming response (counts 0-99, one per second)
+- ✅ Static file serving from CWD via `/files/<path>`
 - ✅ Default route serving "hello world"
 - ✅ Proper HTTP/1.1 keep-alive handling
 - ✅ Error handling with appropriate HTTP status codes
@@ -48,6 +49,18 @@ npm start
 The server listens on `127.0.0.1:1234` by default.
 
 ## Testing
+
+### Static files
+```bash
+# Create a file in the project root
+echo "hello file" > hello.txt
+
+# Fetch it via the static file handler
+curl -v http://127.0.0.1:1234/files/hello.txt
+
+# Non-existent file returns 404
+curl -v http://127.0.0.1:1234/files/does-not-exist
+```
 
 ### Basic test
 ```bash
@@ -90,14 +103,16 @@ sha1sum test.txt
 ## Implementation Details
 - **HTTP Parsing**: Custom implementation of HTTP request line and header parsing
 - **Body Reading**: Streaming body reader with Content-Length, chunked encoding, and EOF support
-- **Buffer Management**: Efficient dynamic buffer with compaction
+- **Buffer Management**: Efficient dynamic buffer with compaction; `allocUnsafe` used only when immediately overwritten
 - **Connection Handling**: Promise-based async/await pattern
-- **Error Handling**: HTTP-compliant error responses
+- **Error Handling**: HTTP-compliant error responses; body resources are closed after send
 - **Streaming**: Async generators for producing streaming responses
 
 ## TODO (from book, for now)
-- [x] Chunked encoding support (in progress - debugging)
+- [x] Chunked encoding support (final chunk termination)
 - [x] Connection-close body reading (EOF)
+- [x] Static file serving from CWD
+- [ ] Range requests (bytes=...) for partial file responses
 - [ ] More HTTP methods and status codes
 - [ ] Code refactoring into modules
 - [ ] Additional HTTP features

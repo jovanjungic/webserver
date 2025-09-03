@@ -420,7 +420,8 @@ function encodeHTTPResp(resp: HTTPRes): Buffer {
 
 // Write complete HTTP response
 async function writeHTTPResp(conn: TCPConn, resp: HTTPRes): Promise<void> {
-    if (resp.body.length < 0) {
+    const isChunked = resp.body.length < 0;
+    if (isChunked) {
         resp.headers.push(Buffer.from("Transfer-Encoding: chunked"));
     } else {
         resp.headers.push(Buffer.from(`Content-Length: ${resp.body.length}`));
@@ -432,18 +433,23 @@ async function writeHTTPResp(conn: TCPConn, resp: HTTPRes): Promise<void> {
     for (let last = false; !last; ) {
         let data = await resp.body.read();
         last = data.length === 0; // has it ended?
-        if (resp.body.length < 0) {
+        if (isChunked && !last) {
             data = Buffer.concat([
                 Buffer.from(data.length.toString(16)),
                 crlf,
                 data,
                 crlf,
             ]);
-        } //chunked
+        }
         if (data.length) {
             await soWrite(conn, data);
         }
+        if (isChunked && last) {
+            // write terminating chunk
+            await soWrite(conn, Buffer.from("0\r\n\r\n"));
+        }
     }
+    await resp.body.close?.();
 }
 
 function resp404(): HTTPRes {
@@ -541,6 +547,7 @@ function bufPush(buf: DynBuff, data: Buffer): void {
 
 // Extract complete HTTP message from buffer
 function cutMessage(buf: DynBuff): null | HTTPReq {
+    const view = buf.data.subarray(buf.start, buf.start + buf.length)
     const idx = buf.data.subarray(0, buf.length).indexOf("\r\n\r\n");
     if (idx < 0) {
         if (buf.length >= kMaxHeaderLen) {

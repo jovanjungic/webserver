@@ -65,6 +65,7 @@ var __asyncGenerator = (this && this.__asyncGenerator) || function (thisArg, _ar
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 var net = require("net");
+var fs = require("fs/promises");
 // Global state and constants
 var running = true;
 var kMaxHeaderLen = 1024 * 8; // 8KB max header size
@@ -74,6 +75,7 @@ function countSheep() {
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
+                    _a.trys.push([0, , 7, 8]);
                     i = 0;
                     _a.label = 1;
                 case 1:
@@ -89,7 +91,11 @@ function countSheep() {
                 case 5:
                     i++;
                     return [3 /*break*/, 1];
-                case 6: return [2 /*return*/];
+                case 6: return [3 /*break*/, 8];
+                case 7:
+                    console.log("cleanup!");
+                    return [7 /*endfinally*/];
+                case 8: return [2 /*return*/];
             }
         });
     });
@@ -208,6 +214,9 @@ var HTTPError = /** @class */ (function (_super) {
     }
     return HTTPError;
 }(Error));
+function open(path, flags) {
+    return fs.open(path, flags);
+}
 // Parse buffer into lines
 function splitLines(data) {
     var lines = [];
@@ -418,6 +427,16 @@ function readerFromGenerator(gen) {
                 }
             });
         }); },
+        close: function () { return __awaiter(_this, void 0, void 0, function () {
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0: return [4 /*yield*/, gen.return()];
+                    case 1:
+                        _a.sent();
+                        return [2 /*return*/];
+                }
+            });
+        }); }
     };
 }
 // Convert HTTP status code to reason phrase
@@ -450,11 +469,13 @@ function encodeHTTPResp(resp) {
 // Write complete HTTP response
 function writeHTTPResp(conn, resp) {
     return __awaiter(this, void 0, void 0, function () {
-        var crlf, last, data;
-        return __generator(this, function (_a) {
-            switch (_a.label) {
+        var isChunked, crlf, last, data;
+        var _a, _b;
+        return __generator(this, function (_c) {
+            switch (_c.label) {
                 case 0:
-                    if (resp.body.length < 0) {
+                    isChunked = resp.body.length < 0;
+                    if (isChunked) {
                         resp.headers.push(Buffer.from("Transfer-Encoding: chunked"));
                     }
                     else {
@@ -462,31 +483,119 @@ function writeHTTPResp(conn, resp) {
                     }
                     return [4 /*yield*/, soWrite(conn, encodeHTTPResp(resp))];
                 case 1:
-                    _a.sent();
+                    _c.sent();
                     crlf = Buffer.from("\r\n");
                     last = false;
-                    _a.label = 2;
+                    _c.label = 2;
                 case 2:
-                    if (!!last) return [3 /*break*/, 6];
+                    if (!!last) return [3 /*break*/, 8];
                     return [4 /*yield*/, resp.body.read()];
                 case 3:
-                    data = _a.sent();
+                    data = _c.sent();
                     last = data.length === 0; // has it ended?
-                    if (resp.body.length < 0) {
+                    if (isChunked && !last) {
                         data = Buffer.concat([
                             Buffer.from(data.length.toString(16)),
                             crlf,
                             data,
                             crlf,
                         ]);
-                    } //chunked
+                    }
                     if (!data.length) return [3 /*break*/, 5];
                     return [4 /*yield*/, soWrite(conn, data)];
                 case 4:
+                    _c.sent();
+                    _c.label = 5;
+                case 5:
+                    if (!(isChunked && last)) return [3 /*break*/, 7];
+                    // write terminating chunk
+                    return [4 /*yield*/, soWrite(conn, Buffer.from("0\r\n\r\n"))];
+                case 6:
+                    // write terminating chunk
+                    _c.sent();
+                    _c.label = 7;
+                case 7: return [3 /*break*/, 2];
+                case 8: return [4 /*yield*/, ((_b = (_a = resp.body).close) === null || _b === void 0 ? void 0 : _b.call(_a))];
+                case 9:
+                    _c.sent();
+                    return [2 /*return*/];
+            }
+        });
+    });
+}
+function resp404() {
+    return {
+        code: 404,
+        headers: [Buffer.from("Server: my_first_http_server")],
+        body: readerFromMemory(Buffer.from("404 Not Found\n")),
+    };
+}
+function readerFromStaticFile(fp, size) {
+    var _this = this;
+    var buf = Buffer.allocUnsafe(65536);
+    var got = 0;
+    return {
+        length: size,
+        read: function () { return __awaiter(_this, void 0, void 0, function () {
+            var r;
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0: return [4 /*yield*/, fp.read({ buffer: buf })];
+                    case 1:
+                        r = _a.sent();
+                        got += r.bytesRead;
+                        if (got > size || (got < size && r.bytesRead === 0)) {
+                            throw new Error("file size changed, abandon it.");
+                        }
+                        // Copy the data to ensure it's stable
+                        return [2 /*return*/, Buffer.from(r.buffer.subarray(0, r.bytesRead))];
+                }
+            });
+        }); },
+        close: function () { return __awaiter(_this, void 0, void 0, function () { return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0: return [4 /*yield*/, fp.close()];
+                case 1: return [2 /*return*/, _a.sent()];
+            }
+        }); }); },
+    };
+}
+function serveStaticFile(path) {
+    return __awaiter(this, void 0, void 0, function () {
+        var fp, stat, size, reader, error_1;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    fp = null;
+                    _a.label = 1;
+                case 1:
+                    _a.trys.push([1, 6, , 9]);
+                    return [4 /*yield*/, fs.open(path, "r")];
+                case 2:
+                    fp = _a.sent();
+                    return [4 /*yield*/, fp.stat()];
+                case 3:
+                    stat = _a.sent();
+                    if (!!stat.isFile()) return [3 /*break*/, 5];
+                    return [4 /*yield*/, fp.close()];
+                case 4:
                     _a.sent();
-                    _a.label = 5;
-                case 5: return [3 /*break*/, 2];
-                case 6: return [2 /*return*/];
+                    return [2 /*return*/, resp404()];
+                case 5:
+                    size = stat.size;
+                    reader = readerFromStaticFile(fp, size);
+                    // fp is now owned by the reader, don't close it here
+                    return [2 /*return*/, { code: 200, headers: [], body: reader }];
+                case 6:
+                    error_1 = _a.sent();
+                    console.info("error serving file: ", error_1);
+                    if (!fp) return [3 /*break*/, 8];
+                    return [4 /*yield*/, fp.close()];
+                case 7:
+                    _a.sent();
+                    _a.label = 8;
+                case 8: return [2 /*return*/, resp404()];
+                case 9: return [2 /*return*/];
             }
         });
     });
@@ -494,24 +603,35 @@ function writeHTTPResp(conn, resp) {
 // Handle HTTP request and response
 function handleReq(req, body) {
     return __awaiter(this, void 0, void 0, function () {
-        var resp;
+        var resp, uri;
         return __generator(this, function (_a) {
-            switch (req.uri.toString("latin1")) {
-                case "/echo":
-                    resp = body;
-                    break;
-                case "/sheep":
-                    resp = readerFromGenerator(countSheep());
-                    break;
-                default:
-                    resp = readerFromMemory(Buffer.from("hello world.\n"));
-                    break;
+            switch (_a.label) {
+                case 0:
+                    uri = req.uri.toString("utf8");
+                    if (!uri.startsWith("/files/")) return [3 /*break*/, 2];
+                    return [4 /*yield*/, serveStaticFile(uri.substr("/files/".length))];
+                case 1: 
+                // serve files from the current working directory
+                // FIXME: prevent escaping by `..`
+                return [2 /*return*/, _a.sent()];
+                case 2:
+                    switch (req.uri.toString("latin1")) {
+                        case "/echo":
+                            resp = body;
+                            break;
+                        case "/sheep":
+                            resp = readerFromGenerator(countSheep());
+                            break;
+                        default:
+                            resp = readerFromMemory(Buffer.from("hello world.\n"));
+                            break;
+                    }
+                    return [2 /*return*/, {
+                            code: 200,
+                            headers: [Buffer.from("Server: my_first_http_server")],
+                            body: resp,
+                        }];
             }
-            return [2 /*return*/, {
-                    code: 200,
-                    headers: [Buffer.from("Server: my_first_http_server")],
-                    body: resp,
-                }];
         });
     });
 }
@@ -523,7 +643,7 @@ function bufPush(buf, data) {
         while (cap < newLen) {
             cap *= 2;
         }
-        var grown = Buffer.alloc(cap);
+        var grown = Buffer.allocUnsafe(cap);
         buf.data.copy(grown, 0, buf.start, buf.start + buf.length);
         buf.data = grown;
         buf.start = 0;
@@ -533,6 +653,7 @@ function bufPush(buf, data) {
 }
 // Extract complete HTTP message from buffer
 function cutMessage(buf) {
+    var view = buf.data.subarray(buf.start, buf.start + buf.length);
     var idx = buf.data.subarray(0, buf.length).indexOf("\r\n\r\n");
     if (idx < 0) {
         if (buf.length >= kMaxHeaderLen) {
@@ -560,41 +681,46 @@ function bufPop(buf, len) {
 function newConn(socket) {
     return __awaiter(this, void 0, void 0, function () {
         var conn, exc_1, resp, exc_2;
-        return __generator(this, function (_a) {
-            switch (_a.label) {
+        var _a, _b;
+        return __generator(this, function (_c) {
+            switch (_c.label) {
                 case 0:
                     conn = soInit(socket);
-                    _a.label = 1;
+                    _c.label = 1;
                 case 1:
-                    _a.trys.push([1, 3, 8, 9]);
+                    _c.trys.push([1, 3, 10, 11]);
                     return [4 /*yield*/, serveClient(conn)];
                 case 2:
-                    _a.sent();
-                    return [3 /*break*/, 9];
+                    _c.sent();
+                    return [3 /*break*/, 11];
                 case 3:
-                    exc_1 = _a.sent();
+                    exc_1 = _c.sent();
                     console.error("exception: ", exc_1);
-                    if (!(exc_1 instanceof HTTPError)) return [3 /*break*/, 7];
+                    if (!(exc_1 instanceof HTTPError)) return [3 /*break*/, 9];
                     resp = {
                         code: exc_1.code,
                         headers: [],
                         body: readerFromMemory(Buffer.from(exc_1.message + "\n")),
                     };
-                    _a.label = 4;
+                    _c.label = 4;
                 case 4:
-                    _a.trys.push([4, 6, , 7]);
+                    _c.trys.push([4, 6, 7, 9]);
                     return [4 /*yield*/, writeHTTPResp(conn, resp)];
                 case 5:
-                    _a.sent();
-                    return [3 /*break*/, 7];
+                    _c.sent();
+                    return [3 /*break*/, 9];
                 case 6:
-                    exc_2 = _a.sent();
-                    return [3 /*break*/, 7];
-                case 7: return [3 /*break*/, 9];
+                    exc_2 = _c.sent();
+                    return [3 /*break*/, 9];
+                case 7: return [4 /*yield*/, ((_b = (_a = resp.body).close) === null || _b === void 0 ? void 0 : _b.call(_a))];
                 case 8:
+                    _c.sent();
+                    return [7 /*endfinally*/];
+                case 9: return [3 /*break*/, 11];
+                case 10:
                     socket.destroy();
                     return [7 /*endfinally*/];
-                case 9: return [2 /*return*/];
+                case 11: return [2 /*return*/];
             }
         });
     });
